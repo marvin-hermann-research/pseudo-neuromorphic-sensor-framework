@@ -1,92 +1,139 @@
 # Pseudo-Neuromorphic Sensor Framework
 
 ## Overview
-This repository provides a lightweight framework for building **pseudo-neuromorphic sensors** on low-cost microcontrollers such as the Arduino Nano and ESP32.  
-The central idea is to transform continuous sensor readings into **event-based signals** by applying temporal windowing, spike detection, and adaptive encoding.  
-
-Instead of transmitting raw, high-frequency data streams, the framework outputs **sparse, spike-like impulses** only when meaningful changes occur.  
-This mimics principles of biological neuromorphic sensing while remaining accessible for low-cost hardware and adaptable to different sensor types.
+This repository implements a **universal pseudo-neuromorphic sensor framework** designed for a wide range of microcontrollers, including Arduino Nano, ESP32, STM32, and potentially smaller MCUs.  
+The core idea is to **convert continuous sensor readings into event-based spikes** rather than transmitting dense raw data streams. This enables efficient, low-latency, and energy-aware sensing suitable for robotics, embedded systems, and research applications.
 
 ---
 
-## Motivation
-Conventional sensors typically deliver continuous, dense data streams, which consume bandwidth and processing capacity while often carrying redundant information.  
-In contrast, neuromorphic sensing emphasizes **event-driven processing**, where signals are generated only when significant changes occur.  
+## Goals & Scope
 
-This framework translates these principles into the domain of hobbyist and research microcontrollers by combining:
-
-- High-frequency polling of standard sensors  
-- Temporal windowing for local analysis  
-- Spike-based detection of significant changes  
-- Adaptive encoding to reduce redundancy while preserving salient events  
-
-The result is a sensor interface that is more efficient, event-driven, and closer to true neuromorphic devices, making it highly suitable for **robotics, embedded systems, and ROS2-based platforms**.
+- **Goal:** Develop a hardware-agnostic framework for event-driven pseudo-neuromorphic sensing.
+- **Core Principle:** Transform sensor data into discrete **events** (spike-like impulses) triggered by meaningful changes.
+- **Minimum Viable Product (MVP):**
+  - 1x single-value sensor (e.g., light, NTC)
+  - 1x multi-channel sensor (e.g., IMU, 3-axis)
+- **Metrics for Evaluation:**
+  - Event latency
+  - Events per second
+  - CPU utilization
+  - RAM footprint
+  - Energy consumption
 
 ---
 
 ## Architectural Principles
-The framework is structured around several core layers:
 
-### Sensors (Input Layer)
-- Abstract interfaces for common sensor types (single-value sensors such as light or temperature, and multi-channel sensors such as IMUs).  
-- Each sensor is polled at a high frequency, independent of the output event rate.
+### 1. Core ↔ Hardware Separation
+- **Core:** Fully hardware-independent, contains:
+  - Event definition
+  - Ringbuffer / Scheduler API
+  - Spike detectors (Δ-threshold, EMA, CUSUM)
+- **Profiles / HAL:** MCU-specific implementations:
+  - Timer, ADC, DMA, sampling rates
+  - Buffer allocation and memory management
 
-### Spike Detectors (Processing Layer)
-Multiple interchangeable strategies for event extraction, including:
-- Simple threshold + hysteresis  
-- Exponential moving average (EMA) with adaptive thresholds  
-- Lightweight drift/shift detection methods (e.g., CUSUM)  
+### 2. Sensor Layer
+- All sensors implement `ISensor<T>` interface.
+- MCU-specific ADC/I²C drivers reside only in Profile/HAL layer.
 
-These algorithms are optimized for constrained devices through fixed-point arithmetic and minimal memory usage.
+### 3. Transport Layer
+- Interface: `Transport.write(Event*, size_t)`
+- Implementations:
+  - UART (binary/raw)
+  - micro-ROS
+  - CAN, BLE
+- Core interacts only via interface → remains platform-independent.
 
-### Event Representation (Encoding Layer)
-Sensor changes are encoded into a normalized event format consisting of:
-- Timestamp (µs resolution)  
-- Sensor ID and channel  
-- Polarity (+/– change)  
-- Magnitude (quantized intensity)  
+### 4. Event Structure
+```cpp
+struct Event {
+  uint32_t t_us;      // Timestamp (wrap-aware)
+  uint8_t  sensor_id;
+  uint8_t  channel;
+  int8_t   polarity;  // -1, 0, +1
+  int16_t  magnitude; // quantized, fixed-point
+};
+```
 
-This unified event structure enables compatibility with ROS2 and other event-driven systems.
+### 5. Sampling Backbone
 
-### Transport (Output Layer)
-Events are serialized and transmitted efficiently:
-- On constrained devices (e.g., Arduino Nano), a binary UART protocol with framing and checksums is used.  
-- On more capable devices (e.g., ESP32), integration with **micro-ROS** enables direct publishing of event arrays to ROS2 topics.  
+- Timer / ISR writes raw sensor samples to a ringbuffer.
+- Main loop executes:
+  - Event detection
+  - Spike encoding
+  - Transport dispatch
+- ISR is extremely lightweight; CPU-intensive computation occurs in main loop only.
 
-### Profiles (Hardware Adaptation)
-Device-specific profiles define buffer sizes, maximum sampling rates, and memory allocations, ensuring stable operation on both low-resource (Nano) and high-performance (ESP32) targets.
+### 6. Spike Detectors
+
+- Implemented in fixed-point (for low-resource MCUs) or float (for high-performance MCUs)
+- Interchangeable strategies using templates or factories
+- Adaptive thresholds configurable at runtime via UART
+
+### 7. Dynamic Configuration
+
+- Compile-time profiles (Nano, ESP32, STM32, …)
+- Runtime parameter updates via UART, e.g.:
+  `SET th=25,alpha=0.03,ref_us=300`
+- Sampling rate auto-adjusts to MCU clock
+
+---
+
+## Repository Structure
+
+```bash
+/src
+  core/
+    event.hpp
+    ring_buffer.hpp
+    spike_detectors.hpp
+    encoder.hpp
+    scheduler.hpp       // API, implementation per profile
+  sensors/
+    isensor.hpp
+    light_adc.hpp       // MVP
+    imu_dummy.hpp       // MVP
+  transports/
+    transport.hpp
+    uart_raw.hpp
+    ros2_msgs.hpp
+  profiles/
+    nano_profile.hpp
+    esp32_profile.hpp
+    stm32_profile.hpp
+    hal/                // Timer, ADC, DMA abstraction
+/examples
+  light_mono_event/
+  imu_tri_event/
+/bench
+  scripts/              // CSV parser, host benchmarking
+```
+
+**Key Principles:**
+- Core is fully MCU-independent
+- All MCU-specific logic exists only in Profiles/HAL
+- Interfaces abstract sensors, transports, and scheduling
 
 ---
 
 ## Features
-- Modular architecture adaptable to different sensor modalities (light, distance, IMU, pressure, etc.)  
-- Event-based encoding that reduces bandwidth and highlights salient changes  
-- Configurable spike-detection algorithms optimized for real-time operation  
-- Unified event format for integration with ROS2 and robotics middleware  
-- Hardware profiles for both low-resource MCUs and higher-performance platforms  
 
----
+- Modular, hardware-agnostic architecture
+- Event-based encoding reduces bandwidth while emphasizing salient changes
+- Configurable spike detection algorithms
+- Unified event format compatible with ROS2 and other middleware
+- Hardware profiles for low- and high-resource MCUs
+- Runtime-adjustable parameters and sampling rates
 
 ## Future Directions
-- Extended support for ESP32 with DMA-based sampling and FreeRTOS task separation  
-- Full **micro-ROS** integration with standard ROS2 message types (`EventArray`)  
-- Sensor-specific optimization strategies (e.g., dynamic window sizes, per-axis IMU analysis)  
-- Benchmarks comparing event-driven vs. continuous sampling in robotic control tasks  
 
----
-
-## References / Inspiration
-- **Steffen, L., Reichard, D., Weinland, J., Kaiser, J., Roennau, A., & Dillmann, R. (2019).**  
-  *Neuromorphic Stereo Vision: A Survey of Bio-Inspired Sensors and Algorithms.*  
-  Frontiers in Neurorobotics, 13.  
-  DOI: [10.3389/fnbot.2019.00028](https://doi.org/10.3389/fnbot.2019.00028)  
-
-- **MaiRo Lab / IMI, KIT**  
-  Research on neuromorphic sensing and robotic integration, which inspired this framework’s attempt to translate neuromorphic principles into **low-cost, accessible hardware platforms**.  
-  More information: [https://www.imi.kit.edu/4418.php](https://www.imi.kit.edu/4418.php)
-
----
+- Extended support for STM32, including DMA-based sampling
+- Full micro-ROS integration with standardized `EventArray` messages
+- Sensor-specific optimizations (e.g., per-axis IMU analysis, dynamic window sizing)
+- Benchmarks comparing event-driven vs. continuous sensing in real robotic tasks
 
 ## Disclaimer
-This framework is **experimental** and designed as a research exploration of event-based sensing on commodity hardware.  
-It is not optimized for industrial deployment, but aims to **bridge the gap between neuromorphic sensing principles and low-cost prototyping**, providing both a testing ground for algorithms and a pathway toward robotics integration.
+
+This framework is **experimental** and intended for research and prototyping.  
+It is **not industrial-grade** but serves as a bridge between neuromorphic sensing principles and low-cost, accessible hardware, providing a flexible platform for algorithm testing and robotics integration.
